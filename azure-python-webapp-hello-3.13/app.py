@@ -5,7 +5,7 @@ app = Flask(__name__)
 
 @app.get("/")
 def home():
-    return "Hello from Azure App Service on Python 3.13! 🎉"
+    return "Hello from Azure App Service on Python 3.14! 🎉"
 
 @app.get("/health")
 def health():
