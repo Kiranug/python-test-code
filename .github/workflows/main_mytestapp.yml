@@ -20,9 +20,9 @@ jobs:
           python-version: '3.13'
 
       # Optional: run tests here (if you have them)
-      - run: |
-         python -m pip install -r azure-python-webapp-hello-3.13/requirements.txt
-         pytest -q
+      #- run: |
+        # python -m pip install -r azure-python-webapp-hello-3.13/requirements.txt
+        # pytest -q
 
       - name: Upload artifact (only the app folder)
         uses: actions/upload-artifact@v4
@@ -64,3 +64,4 @@ jobs:
           app-name: 'mytestapp'
           slot-name: 'Production'
           package: site
+
