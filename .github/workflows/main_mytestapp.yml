@@ -5,6 +5,11 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# Avoid overlapping deploys to the same app (prevents SCM restart conflicts)
+concurrency:
+  group: mytestapp-prod
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,18 +18,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Optional: keep if you want to run unit tests; not required for deploy
-      - name: Set up Python (for tests only)
+      # (Optional) only if you run tests; not required for deployment itself
+      - name: Set up Python (for tests)
+        if: false
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
 
-      # Optional: run tests here (if you have them)
-      #- run: |
-        # python -m pip install -r azure-python-webapp-hello-3.13/requirements.txt
-        # pytest -q
+      # If you want tests, enable this and point to the folder:
+      # - run: |
+      #     python -m pip install -r azure-python-webapp-hello-3.13/requirements.txt
+      #     pytest -q
 
-      - name: Upload artifact (only the app folder)
+      # Upload only the app folder as the artifact
+      - name: Upload artifact (app only)
         uses: actions/upload-artifact@v4
         with:
           name: drop
@@ -43,6 +50,21 @@ jobs:
           name: drop
           path: site
 
+      - name: Sanity check package structure
+        run: |
+          ls -la site
+          # If your artifact unpacked into a nested folder, flatten it:
+          if [ -d "site/azure-python-webapp-hello-3.13" ]; then
+            shopt -s dotglob
+            mv site/azure-python-webapp-hello-3.13/* site/
+            rmdir site/azure-python-webapp-hello-3.13
+          fi
+          ls -la site
+          test -f site/requirements.txt || (echo "requirements.txt missing at package root" && exit 1)
+          test -f site/app.py || (echo "app.py missing at package root" && exit 1)
+          test -f site/startup.sh || (echo "startup.sh missing at package root" && exit 1)
+          chmod +x site/startup.sh
+
       - name: Login to Azure (OIDC)
         uses: azure/login@v2
         with:
@@ -50,18 +72,40 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_E30113D04FD94867ADF21AA24D9FAD35 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_BDD52ABFD4C64D628A1CD487C4DCB06A }}
 
-      # (One-time) set startup and build flag. Replace <RG> with your resource group.
-      - name: Configure Web App (startup + build during deploy)
+      # ⚠️ Run this ONCE (manually) to set config, not on every push
+      - name: One-time web app configuration (manual runs only)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         uses: azure/cli@v2
         with:
           inlineScript: |
             az webapp config set -g qa-resource-group -n mytestapp --startup-file "bash startup.sh"
             az webapp config appsettings set -g qa-resource-group -n mytestapp --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true
+            echo "Waiting 60s for SCM/Kudu to recycle cleanly to avoid deploy conflict..."
+            sleep 60
+
+      # Small guard delay even on normal runs
+      - name: Guard delay
+        run: sleep 10
 
       - name: Deploy to Azure Web App
+        id: deploy-onedeploy
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'mytestapp'
-          slot-name: 'Production'
+          app-name: mytestapp
+          slot-name: Production
           package: site
 
+      # Simple retry if the first attempt fails (e.g., rare SCM recycle)
+      - name: Retry after wait if failed
+        if: ${{ failure() }}
+        run: |
+          echo "First attempt failed. Waiting 60s and retrying..."
+          sleep 60
+
+      - name: Deploy to Azure Web App (retry)
+        if: ${{ failure() }}
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: mytestapp
+          slot-name: Production
+          package: site
